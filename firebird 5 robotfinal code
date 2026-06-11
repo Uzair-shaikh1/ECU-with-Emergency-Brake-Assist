@@ -1,0 +1,583 @@
+/*
+ * ============================================================
+ *  Firebird V – CAN Safety Receiver
+ *  Atmel Studio 7 | AVR-GCC | ATmega2560 | Pure C
+ *
+ *  Pin mapping from OFFICIAL Firebird V / e-Yantra documentation:
+ *
+ *  LCD (onboard 16x2, 4-bit parallel on PORTC):
+ *    RS  = PC0
+ *    RW  = PC1
+ *    EN  = PC2
+ *    D4  = PC4
+ *    D5  = PC5
+ *    D6  = PC6
+ *    D7  = PC7
+ *
+ *  Motors (onboard L293D, official pin map):
+ *    L1  = PA0  (Left  motor dir 1)
+ *    L2  = PA1  (Left  motor dir 2)
+ *    R1  = PA2  (Right motor dir 1)
+ *    R2  = PA3  (Right motor dir 2)
+ *    PWM Left  = PL3 (OC5A)
+ *    PWM Right = PL4 (OC5B)
+ *
+ *  UART (USB serial for debug via PuTTY):
+ *    TX  = PH1 (TXD2) — UART2 = USB on Firebird V
+ *    RX  = PH0 (RXD2)
+ *
+ *  MCP2515 (Expansion header, from your manual image):
+ *    CS  = PB0 (Exp Pin 11)
+ *    SCK = PB1 (Exp Pin 14)
+ *    MOSI= PB2 (Exp Pin 13)
+ *    MISO= PB3 (Exp Pin 16)
+ *    INT = PE7 (Exp Pin 3)  → INT7
+ *
+ *  CAN Frame (ID: 0x120, DLC: 7):
+ *    [0]=State [1]=Speed [2]=Brake [3]=DistLow [4]=DistHigh [5]=Counter [6]=Checksum
+ *
+ *  States:
+ *    0 = NORMAL    → Forward full speed (PWM=200)
+ *    1 = WARNING   → Forward slow speed (PWM=100)
+ *    2 = EMERGENCY → Stop
+ *
+ *  BUZZER: DISABLED in all states
+ *
+ *  NOTE: Remove Jumper J4 before connecting MCP2515!
+ *  F_CPU = 14745600UL
+ * ============================================================
+ */
+
+#define F_CPU 14745600UL
+
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+#include <stdint.h>
+
+/* =========================================================
+   MACROS
+   ========================================================= */
+#define sbit(reg, bit)  ((reg) |=  (1 << (bit)))
+#define cbit(reg, bit)  ((reg) &= ~(1 << (bit)))
+
+/* =========================================================
+   SECTION 1 – LCD (PORTC, 4-bit mode, official Firebird V wiring)
+   RS=PC0  RW=PC1  EN=PC2  D4-D7=PC4-PC7
+   ========================================================= */
+#define LCD_PORT    PORTC
+#define LCD_DDR     DDRC
+#define LCD_RS      0
+#define LCD_RW      1
+#define LCD_EN      2
+
+static void lcd_pulse_enable(void)
+{
+    sbit(LCD_PORT, LCD_EN);
+    _delay_ms(1);
+    cbit(LCD_PORT, LCD_EN);
+    _delay_ms(1);
+}
+
+/* Send upper nibble (bits 7:4) in PC7:PC4 */
+static void lcd_send_nibble(uint8_t nibble)
+{
+    /* Clear D4-D7 (PC4-PC7) then set */
+    LCD_PORT = (LCD_PORT & 0x0F) | (nibble & 0xF0);
+    lcd_pulse_enable();
+}
+
+static void lcd_cmd(uint8_t cmd)
+{
+    cbit(LCD_PORT, LCD_RS);
+    cbit(LCD_PORT, LCD_RW);
+    lcd_send_nibble(cmd);           /* high nibble */
+    lcd_send_nibble(cmd << 4);      /* low nibble  */
+    _delay_ms(2);
+}
+
+static void lcd_data(uint8_t data)
+{
+    sbit(LCD_PORT, LCD_RS);
+    cbit(LCD_PORT, LCD_RW);
+    lcd_send_nibble(data);          /* high nibble */
+    lcd_send_nibble(data << 4);     /* low nibble  */
+    _delay_ms(1);
+}
+
+static void lcd_init(void)
+{
+    LCD_DDR = 0xFF;         /* all PORTC output */
+    LCD_PORT = 0x00;
+    _delay_ms(20);
+
+    /* 4-bit init sequence (3× send 0x30 then 0x20) */
+    LCD_PORT = 0x30; lcd_pulse_enable(); _delay_ms(5);
+    LCD_PORT = 0x30; lcd_pulse_enable(); _delay_ms(1);
+    LCD_PORT = 0x30; lcd_pulse_enable(); _delay_ms(1);
+    LCD_PORT = 0x20; lcd_pulse_enable(); _delay_ms(1);  /* switch to 4-bit */
+
+    lcd_cmd(0x28);  /* 4-bit, 2-line, 5×8 font */
+    lcd_cmd(0x0C);  /* display ON, cursor OFF */
+    lcd_cmd(0x06);  /* entry mode: increment, no shift */
+    lcd_cmd(0x01);  /* clear display */
+    _delay_ms(2);
+}
+
+static void lcd_clear(void)
+{
+    lcd_cmd(0x01);
+    _delay_ms(2);
+}
+
+/* row=1 or 2, col=1..16 */
+static void lcd_cursor(uint8_t row, uint8_t col)
+{
+    uint8_t addr = (row == 1) ? (0x80 + col - 1) : (0xC0 + col - 1);
+    lcd_cmd(addr);
+}
+
+static void lcd_string(const char *s)
+{
+    while (*s) lcd_data((uint8_t)*s++);
+}
+
+/* Print unsigned 16-bit integer */
+static void lcd_uint16(uint16_t v)
+{
+    char buf[6];
+    uint8_t i = 0;
+    if (v == 0) { lcd_data('0'); return; }
+    while (v) { buf[i++] = '0' + (v % 10); v /= 10; }
+    while (i--) lcd_data((uint8_t)buf[i]);
+}
+
+/* =========================================================
+   SECTION 2 – UART2 (USB on Firebird V: PH0=RX2, PH1=TX2)
+   115200 baud, 8N1 @ 14745600 Hz → UBRR2=7
+   ========================================================= */
+static void uart_init(void)
+{
+    UBRR2H = 0;
+    UBRR2L = 7;
+    UCSR2B = (1 << TXEN2);
+    UCSR2C = (1 << UCSZ21) | (1 << UCSZ20);
+}
+
+static void uart_putc(char c)
+{
+    while (!(UCSR2A & (1 << UDRE2)));
+    UDR2 = c;
+}
+
+static void uart_puts(const char *s)
+{
+    while (*s) uart_putc(*s++);
+}
+
+static void uart_putu16(uint16_t v)
+{
+    char buf[6];
+    uint8_t i = 0;
+    if (v == 0) { uart_putc('0'); return; }
+    while (v) { buf[i++] = '0' + (v % 10); v /= 10; }
+    while (i--) uart_putc(buf[i]);
+}
+
+/* =========================================================
+   SECTION 3 – Motor control
+   DIR : PA0=L1, PA1=L2, PA2=R1, PA3=R2
+   PWM : PL3=OC5A (Left), PL4=OC5B (Right)  Timer5 Fast PWM 8-bit
+   Forward  : L1=1,L2=0  R1=1,R2=0
+   Backward : L1=0,L2=1  R1=0,R2=1
+   Stop     : L1=0,L2=0  R1=0,R2=0
+   ========================================================= */
+static void motor_init(void)
+{
+    /* Direction pins PA0-PA3 */
+    DDRA  |= 0x0F;
+    PORTA &= 0xF0;
+
+    /* PWM pins PL3, PL4 */
+    DDRL  |= (1 << PL3) | (1 << PL4);
+
+    /* Timer5: Fast PWM 8-bit (WGM5[2:0]=101), non-inverting OC5A & OC5B
+     * Prescaler = 8 → PWM freq = 14745600/8/256 ≈ 7200 Hz
+     * TCCR5A: COM5A1=1 COM5B1=1 WGM50=1
+     * TCCR5B: WGM52=1 CS51=1 (prescaler=8)
+     */
+    TCCR5A = (1 << COM5A1) | (1 << COM5B1) | (1 << WGM50);
+    TCCR5B = (1 << WGM52)  | (1 << CS51);
+    OCR5A  = 0;
+    OCR5B  = 0;
+}
+
+static void motor_stop(void)
+{
+    OCR5A  = 0;
+    OCR5B  = 0;
+    PORTA &= 0xF0;  /* clear PA0-PA3 */
+}
+
+static void motor_forward(uint8_t pwm)
+{
+    /* L1=1,L2=0,R1=1,R2=0 → PA0=1,PA1=0,PA2=1,PA3=0 → PA=0x05 (only lower nibble) */
+    PORTA = (PORTA & 0xF0) | 0x05;
+    OCR5A = pwm;    /* Left */
+    OCR5B = pwm;    /* Right */
+}
+
+/* =========================================================
+   SECTION 4 – SPI (hardware master, Mode 0,0)
+   CS=PB0, SCK=PB1, MOSI=PB2, MISO=PB3
+   ========================================================= */
+static void spi_init(void)
+{
+    DDRB  |=  (1 << PB0) | (1 << PB1) | (1 << PB2); /* CS,SCK,MOSI output */
+    DDRB  &= ~(1 << PB3);                             /* MISO input */
+    PORTB |=  (1 << PB0);                             /* CS idle HIGH */
+    /* SPE=1 MSTR=1 CPOL=0 CPHA=0 SPI2X=1 → fosc/2 ≈ 7.37 MHz */
+    SPCR = (1 << SPE) | (1 << MSTR);
+    SPSR = (1 << SPI2X);
+}
+
+static inline void cs_low(void)  { PORTB &= ~(1 << PB0); }
+static inline void cs_high(void) { PORTB |=  (1 << PB0); }
+
+static uint8_t spi_byte(uint8_t d)
+{
+    SPDR = d;
+    while (!(SPSR & (1 << SPIF)));
+    return SPDR;
+}
+
+/* =========================================================
+   SECTION 5 – MCP2515 driver (register-level)
+   ========================================================= */
+#define MCP_RESET       0xC0
+#define MCP_READ        0x03
+#define MCP_WRITE       0x02
+#define MCP_BITMOD      0x05
+#define MCP_READ_RX0    0x90   /* reads RXB0SIDH..D7 */
+
+#define MCP_CANSTAT     0x0E
+#define MCP_CANCTRL     0x0F
+#define MCP_CNF3        0x28
+#define MCP_CNF2        0x29
+#define MCP_CNF1        0x2A
+#define MCP_CANINTE     0x2B
+#define MCP_CANINTF     0x2C
+#define MCP_RXB0CTRL    0x60
+#define MCP_RXM0SIDH    0x20
+#define MCP_RXM0SIDL    0x21
+#define MCP_RXF0SIDH    0x00
+#define MCP_RXF0SIDL    0x01
+
+#define MODE_CONFIG     0x80
+#define MODE_NORMAL     0x00
+#define RXIF0           0x01
+
+static void mcp_write_reg(uint8_t addr, uint8_t val)
+{
+    cs_low();
+    spi_byte(MCP_WRITE); spi_byte(addr); spi_byte(val);
+    cs_high();
+}
+
+static uint8_t mcp_read_reg(uint8_t addr)
+{
+    cs_low();
+    spi_byte(MCP_READ); spi_byte(addr);
+    uint8_t v = spi_byte(0xFF);
+    cs_high();
+    return v;
+}
+
+static void mcp_bitmod(uint8_t addr, uint8_t mask, uint8_t val)
+{
+    cs_low();
+    spi_byte(MCP_BITMOD); spi_byte(addr); spi_byte(mask); spi_byte(val);
+    cs_high();
+}
+
+static void mcp_reset(void)
+{
+    cs_low(); spi_byte(MCP_RESET); cs_high();
+    _delay_ms(10);
+}
+
+/*
+ * 500 kbps @ MCP2515 with 8 MHz oscillator (the module's own crystal):
+ * TQ = 2 / 8 MHz = 250 ns
+ * Bit = 8 TQ = 2 µs = 500 kbps
+ * CNF1 = 0x00  BRP=0 → TQ=250ns, SJW=1TQ
+ * CNF2 = 0x90  BTLMODE=1, SAM=0, PHSEG1=2(=3TQ), PRSEG=0(=1TQ)
+ * CNF3 = 0x02  PHSEG2=2(=3TQ)
+ * Total: 1+1+3+3 = 8 TQ ✓
+ */
+static uint8_t mcp_init(void)
+{
+    mcp_reset();
+
+    mcp_write_reg(MCP_CANCTRL, MODE_CONFIG);
+    _delay_ms(5);
+    if ((mcp_read_reg(MCP_CANSTAT) & 0xE0) != MODE_CONFIG) return 0;
+
+    mcp_write_reg(MCP_CNF1, 0x00);
+    mcp_write_reg(MCP_CNF2, 0x90);
+    mcp_write_reg(MCP_CNF3, 0x02);
+
+    /* RXB0: filter ON (not receive-all), no rollover */
+    mcp_write_reg(MCP_RXB0CTRL, 0x00);
+
+    /* Mask0: check all 11 ID bits */
+    mcp_write_reg(MCP_RXM0SIDH, 0xFF);
+    mcp_write_reg(MCP_RXM0SIDL, 0xE0);
+
+    /*
+     * Filter0: accept only 0x120
+     * SIDH = 0x120 >> 3 = 0x24
+     * SIDL = (0x120 & 0x07) << 5 = 0x00
+     */
+    mcp_write_reg(MCP_RXF0SIDH, 0x24);
+    mcp_write_reg(MCP_RXF0SIDL, 0x00);
+
+    /* Enable RX0 interrupt */
+    mcp_write_reg(MCP_CANINTE, RXIF0);
+
+    /* Normal mode */
+    mcp_write_reg(MCP_CANCTRL, MODE_NORMAL);
+    _delay_ms(5);
+    if ((mcp_read_reg(MCP_CANSTAT) & 0xE0) != MODE_NORMAL) return 0;
+
+    return 1;
+}
+
+typedef struct { uint16_t id; uint8_t dlc; uint8_t data[8]; } can_frame_t;
+
+static void mcp_read_rx0(can_frame_t *f)
+{
+    cs_low();
+    spi_byte(MCP_READ_RX0);
+    uint8_t sidh = spi_byte(0xFF);
+    uint8_t sidl = spi_byte(0xFF);
+    spi_byte(0xFF);             /* EID8 unused */
+    spi_byte(0xFF);             /* EID0 unused */
+    uint8_t dlc = spi_byte(0xFF) & 0x0F;
+    f->id  = ((uint16_t)sidh << 3) | (sidl >> 5);
+    f->dlc = dlc;
+    for (uint8_t i = 0; i < dlc && i < 8; i++)
+        f->data[i] = spi_byte(0xFF);
+    cs_high();
+    mcp_bitmod(MCP_CANINTF, RXIF0, 0x00); /* clear RX0IF */
+}
+
+/* =========================================================
+   SECTION 6 – INT7 (PE7, Expansion Pin 3) – MCP2515 INT
+   ========================================================= */
+volatile uint8_t can_flag = 0;
+
+ISR(INT7_vect) { can_flag = 1; }
+
+static void int7_init(void)
+{
+    cbit(DDRE,  PE7);
+    sbit(PORTE, PE7);                         /* pull-up */
+    EICRB = (EICRB & ~(0x03 << 6)) | (0x02 << 6); /* falling edge */
+    sbit(EIMSK, INT7);
+}
+
+/* =========================================================
+   SECTION 7 – millis() via Timer1 (prescaler=64)
+   Preload = 65536 - (14745600/64/1000) = 65536 - 230 = 65306 = 0xFF1A
+   ========================================================= */
+volatile uint32_t ms_ticks = 0;
+
+ISR(TIMER1_OVF_vect)
+{
+    TCNT1 = 0xFF1A;
+    ms_ticks++;
+}
+
+static void timer1_init(void)
+{
+    TCCR1A = 0;
+    TCCR1B = (1 << CS11) | (1 << CS10); /* prescaler = 64 */
+    TCNT1  = 0xFF1A;
+    TIMSK1 = (1 << TOIE1);
+}
+
+static uint32_t millis(void)
+{
+    uint32_t t;
+    uint8_t sreg = SREG;
+    cli();
+    t = ms_ticks;
+    SREG = sreg;
+    return t;
+}
+
+/* =========================================================
+   SECTION 8 – Application
+   ========================================================= */
+#define STATE_NORMAL      0
+#define STATE_WARNING     1
+#define STATE_EMERGENCY   2
+
+#define PWM_NORMAL        200
+#define PWM_WARNING       100
+#define CAN_TIMEOUT_MS    500UL
+
+static uint8_t  g_state         = STATE_EMERGENCY;
+static uint8_t  g_last_ctr      = 255;
+static uint32_t g_last_frame_ms = 0;
+
+static uint8_t calc_checksum(uint8_t b0, uint8_t b1, uint8_t b2,
+                              uint8_t b3, uint8_t b4, uint8_t b5)
+{
+    return b0 ^ b1 ^ b2 ^ b3 ^ b4 ^ b5;
+}
+
+static void update_lcd(uint8_t state, uint16_t dist)
+{
+    lcd_clear();
+    lcd_cursor(1, 1);
+    switch (state) {
+        case STATE_NORMAL:    lcd_string("State:  NORMAL  "); break;
+        case STATE_WARNING:   lcd_string("State: WARNING  "); break;
+        case STATE_EMERGENCY: lcd_string("State:EMERGENCY "); break;
+        default:              lcd_string("State: UNKNOWN  "); break;
+    }
+    lcd_cursor(2, 1);
+    lcd_string("Dist: ");
+    if (dist == 999) {
+        lcd_string("SENSOR ERR ");
+    } else {
+        lcd_uint16(dist);
+        lcd_string(" cm      ");
+    }
+}
+
+static void apply_state(uint8_t state, uint16_t dist)
+{
+    switch (state) {
+        case STATE_NORMAL:    motor_forward(PWM_NORMAL);  break;
+        case STATE_WARNING:   motor_forward(PWM_WARNING); break;
+        case STATE_EMERGENCY: motor_stop();               break;
+        default:              motor_stop();               break;
+    }
+    /* BUZZER DISABLED — no buzzer calls */
+    update_lcd(state, dist);
+}
+
+/* =========================================================
+   MAIN
+   ========================================================= */
+int main(void)
+{
+    /* ---------- Init all peripherals ---------- */
+    spi_init();
+    uart_init();
+    motor_init();
+    timer1_init();
+    int7_init();
+    sei();
+
+    /* LCD */
+    lcd_init();
+    lcd_cursor(1, 1); lcd_string("Firebird CAN RX ");
+    lcd_cursor(2, 1); lcd_string("Initialising... ");
+    _delay_ms(1500);
+
+    uart_puts("\r\n============================================\r\n");
+    uart_puts("Firebird V CAN Safety Receiver\r\n");
+    uart_puts("ATmega2560 | 14.7456MHz | CAN 500kbps\r\n");
+    uart_puts("============================================\r\n");
+
+    /* MCP2515 */
+    if (!mcp_init()) {
+        uart_puts("ERROR: MCP2515 init FAILED\r\n");
+        uart_puts("Check: J4 jumper removed? Wiring correct?\r\n");
+        lcd_clear();
+        lcd_cursor(1, 1); lcd_string("CAN INIT ERROR! ");
+        lcd_cursor(2, 1); lcd_string("Check J4 jumper ");
+        while (1); /* halt */
+    }
+
+    uart_puts("MCP2515 OK — waiting for STM32 frames...\r\n");
+    lcd_clear();
+    lcd_cursor(1, 1); lcd_string("CAN OK          ");
+    lcd_cursor(2, 1); lcd_string("Waiting STM32...");
+
+    g_last_frame_ms = millis();
+    can_frame_t frame;
+
+    /* ---------- Main loop ---------- */
+    while (1)
+    {
+        /* ---- Process CAN message ---- */
+        if (can_flag)
+        {
+            can_flag = 0;
+
+            if (mcp_read_reg(MCP_CANINTF) & RXIF0)
+            {
+                mcp_read_rx0(&frame);
+
+                if (frame.id == 0x120 && frame.dlc == 7)
+                {
+                    uint8_t  rx_state = frame.data[0];
+                    uint8_t  rx_speed = frame.data[1];
+                    uint8_t  rx_brake = frame.data[2];
+                    uint8_t  d_low    = frame.data[3];
+                    uint8_t  d_high   = frame.data[4];
+                    uint8_t  rx_ctr   = frame.data[5];
+                    uint8_t  rx_chk   = frame.data[6];
+
+                    /* Validate checksum */
+                    if (calc_checksum(rx_state, rx_speed, rx_brake,
+                                      d_low, d_high, rx_ctr) != rx_chk) {
+                        uart_puts("WARN: bad checksum\r\n");
+                        continue;
+                    }
+
+                    /* Missed frame check */
+                    if (rx_ctr != (uint8_t)(g_last_ctr + 1) && g_last_ctr != 255) {
+                        uart_puts("WARN: missed frame\r\n");
+                    }
+
+                    g_last_ctr      = rx_ctr;
+                    g_last_frame_ms = millis();
+
+                    uint16_t dist = ((uint16_t)d_high << 8) | d_low;
+
+                    g_state = rx_state;
+                    apply_state(g_state, dist);
+
+                    /* UART debug */
+                    uart_puts("[CAN] ");
+                    switch (g_state) {
+                        case STATE_NORMAL:    uart_puts("NORMAL    "); break;
+                        case STATE_WARNING:   uart_puts("WARNING   "); break;
+                        case STATE_EMERGENCY: uart_puts("EMERGENCY "); break;
+                    }
+                    uart_puts("| dist="); uart_putu16(dist);
+                    uart_puts("cm | ctr="); uart_putu16(rx_ctr);
+                    uart_puts("\r\n");
+                }
+            }
+        }
+
+        /* ---- CAN timeout watchdog ---- */
+        if ((millis() - g_last_frame_ms) > CAN_TIMEOUT_MS)
+        {
+            if (g_state != STATE_EMERGENCY) {
+                uart_puts("TIMEOUT: emergency stop\r\n");
+                g_state = STATE_EMERGENCY;
+                apply_state(STATE_EMERGENCY, 999);
+            }
+        }
+    }
+
+    return 0;
+}
