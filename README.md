@@ -185,6 +185,11 @@ python3 safety_dashboard.py
 * Integrate camera-based object detection.
 
 ---
+## Demo Video
+
+Watch the project demonstration here:
+
+[Watch Demo on YouTube](https://youtu.be/8f8pyCtXNAc)
 
 ## Team Members
 
