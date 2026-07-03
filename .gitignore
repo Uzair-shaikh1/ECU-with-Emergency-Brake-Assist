@@ -1,0 +1,22 @@
+# Build files
+build/
+Debug/
+Release/
+
+# Object and binary files
+*.o
+*.elf
+*.hex
+*.bin
+*.map
+
+# Logs
+*.log
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
