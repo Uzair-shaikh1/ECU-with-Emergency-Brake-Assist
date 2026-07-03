@@ -39,6 +39,9 @@ After processing the sensor values, STM32 decides the safety condition and sends
 The FireBird V Robot receives the CAN message using the MCP2515 CAN module. Based on the received safety command, it controls the robot motors and displays the safety state on the LCD.
 
 ---
+## Hardware Setup
+
+![Hardware Setup](images/hardware_setup.jpg)
 
 ## Components Used
 
@@ -123,7 +126,7 @@ The MCP2515 CAN modules are connected on both sides. STM32 sends the safety comm
 ---
 ## Raspberry Pi Dashboard
 
-![Dashboard](images/dashboard.jpg)
+![Dashboard](images/dashboard.jpeg)
 
 ## Applications
 
