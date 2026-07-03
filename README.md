@@ -23,14 +23,14 @@ This project was implemented using an STM32 microcontroller, LIDAR sensor, IMU s
 
 ## System Architecture
 
-The system mainly consists of two sections:
+The system has two main sections:
 
 ### 1. Safety Supervisor ECU Side
 
 The STM32 microcontroller acts as the main ECU. It collects sensor data from:
 
-* LIDAR-Lite sensor for distance measurement
-* MPU6050 IMU sensor for motion-related data
+- LIDAR-Lite sensor for distance measurement
+- MPU6050 IMU sensor for motion-related data
 
 After processing the sensor values, STM32 decides the safety condition and sends the command through CAN communication.
 
@@ -38,13 +38,7 @@ After processing the sensor values, STM32 decides the safety condition and sends
 
 The FireBird V Robot receives the CAN message using the MCP2515 CAN module. Based on the received safety command, it controls the robot motors and displays the safety state on the LCD.
 
-## System Architecture
-
-The system uses LIDAR and IMU sensor data to detect vehicle safety conditions.  
-The STM32 acts as the Safety Supervisor ECU and sends safety commands to the Firebird V robot through CAN communication.
-
 ![System Block Diagram](images/block_diagram.png)
----
 ## Components Used
 
 * STM32 NUCLEO-F446RE Microcontroller
@@ -53,7 +47,7 @@ The STM32 acts as the Safety Supervisor ECU and sends safety commands to the Fir
 * MPU6050 IMU Sensor
 * MCP2515 CAN Modules
 * TJA1050 CAN Transceiver
-* Rapberry Pi 4b with touch display
+* Raspberry Pi 4B with touch display
 * Jumper Wires
 * Power Supply / Battery
 
@@ -66,11 +60,11 @@ The STM32 acts as the Safety Supervisor ECU and sends safety commands to the Fir
 
 The system continuously reads obstacle distance using the LIDAR sensor. According to the distance value, the safety state is selected.
 
-| State     | Condition                            | Robot Action                |
-| --------- | ------------------------------------ | --------------------------- |
-| Normal    | Safe distance                        | Robot moves at normal speed |
-| Warning   | Obstacle detected at medium distance | Robot slows down            |
-| Emergency | Obstacle detected very close         | Robot stops immediately     |
+| State | Condition | Robot Action |
+|---|---|---|
+| Normal | Safe distance | Robot moves at normal speed |
+| Warning | Obstacle detected at medium distance | Robot slows down |
+| Emergency | Obstacle detected very close | Robot stops immediately |
 
 The STM32 sends the selected safety state to the FireBird V Robot through CAN communication. The FireBird V Robot receives this data and performs the required action.
 
@@ -100,13 +94,22 @@ The MCP2515 CAN modules are connected on both sides. STM32 sends the safety comm
 
 ### CAN Message Example
 
-| Data | Meaning         |
-| ---- | --------------- |
-| 0    | Normal State    |
-| 1    | Warning State   |
-| 2    | Emergency State |
-
+| Data | Meaning |
+|---|---|
+| 0 | Normal State |
+| 1 | Warning State |
+| 2 | Emergency State |
 ---
+
+## Repository Structure
+
+| Folder/File | Description |
+|---|---|
+| `src/stm32_ecu/` | STM32 Safety Supervisor ECU code |
+| `src/firebird_v_robot/` | FireBird V Robot CAN receiver and motor control code |
+| `docs/` | Report, presentation, pin connections, architecture, and testing results |
+| `images/` | Project images, block diagram, hardware setup, and dashboard |
+| `LICENSE` | MIT License |
 
 ## Software Tools Used
 
@@ -132,6 +135,29 @@ The MCP2515 CAN modules are connected on both sides. STM32 sends the safety comm
 ## Raspberry Pi Dashboard
 
 ![Dashboard](images/dashboard.jpeg)
+
+## How to Run
+
+### STM32 ECU Code
+
+1. Open the STM32 ECU code from `src/stm32_ecu/`.
+2. Open the project/code in STM32CubeIDE or Arduino IDE, depending on the file used.
+3. Connect the LIDAR, IMU, and MCP2515 CAN module as per the pin connection document.
+4. Upload the code to the STM32 board.
+
+### FireBird V Robot Code
+
+1. Open the FireBird V Robot code from `src/firebird_v_robot/`.
+2. Open it in Atmel Studio / Microchip Studio.
+3. Connect the MCP2515 CAN module to the FireBird V Robot using SPI.
+4. Upload the code to the ATmega2560 controller.
+5. Power the robot and check the LCD state output.
+
+### Raspberry Pi Dashboard
+
+1. Open the dashboard code if available.
+2. Run the Python file on Raspberry Pi.
+3. Use the dashboard for logging and visual monitoring.
 
 ## Applications
 
