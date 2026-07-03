@@ -121,6 +121,9 @@ The MCP2515 CAN modules are connected on both sides. STM32 sends the safety comm
 * Hardware-level implementation using real sensors and robot platform
 
 ---
+## Raspberry Pi Dashboard
+
+![Dashboard](images/dashboard.jpg)
 
 ## Applications
 
