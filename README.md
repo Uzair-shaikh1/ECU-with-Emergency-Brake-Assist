@@ -161,7 +161,7 @@ The MCP2515 CAN modules are connected on both sides. STM32 sends the safety comm
 3. Install required Python libraries if needed.
 4. Run the dashboard using:
 
-```bash
+``bash
 python3 safety_dashboard.py
 
 ## Applications
