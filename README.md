@@ -38,11 +38,13 @@ After processing the sensor values, STM32 decides the safety condition and sends
 
 The FireBird V Robot receives the CAN message using the MCP2515 CAN module. Based on the received safety command, it controls the robot motors and displays the safety state on the LCD.
 
+## System Architecture
+
+The system uses LIDAR and IMU sensor data to detect vehicle safety conditions.  
+The STM32 acts as the Safety Supervisor ECU and sends safety commands to the Firebird V robot through CAN communication.
+
+![System Block Diagram](images/block_diagram.png)
 ---
-## Hardware Setup
-
-![Hardware Setup](images/hardware_setup.jpg)
-
 ## Components Used
 
 * STM32 NUCLEO-F446RE Microcontroller
@@ -56,6 +58,9 @@ The FireBird V Robot receives the CAN message using the MCP2515 CAN module. Base
 * Power Supply / Battery
 
 ---
+## Hardware Setup
+
+![Hardware Setup](images/hardware_setup.jpg)
 
 ## Working Principle
 
