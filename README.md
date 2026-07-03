@@ -184,6 +184,14 @@ python3 safety_dashboard.py
 * Implement more realistic road scenarios.
 * Integrate camera-based object detection.
 
+## Project Documents
+
+- [Project Report](docs/Safety_Supervisor_ECU_Report.pdf)
+- [Presentation PDF](docs/Safety_Supervisor_ECU_Presentation.pdf)
+- [Pin Connections](docs/pin_connections.md)
+- [System Architecture](docs/system_architecture.md)
+- [Testing Results](docs/testing_results.md)
+- [Editable Presentation PPTX](docs/Safety_Supervisor_ECU_Presentation.pptx)
 ---
 ## Demo Video
 
