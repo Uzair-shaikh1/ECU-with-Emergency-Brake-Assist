@@ -110,6 +110,7 @@ The MCP2515 CAN modules are connected on both sides. STM32 sends the safety comm
 | `docs/` | Report, presentation, pin connections, architecture, and testing results |
 | `images/` | Project images, block diagram, hardware setup, and dashboard |
 | `LICENSE` | MIT License |
+| `src/raspberry_pi_dashboard/` | Raspberry Pi dashboard code for logging and visual monitoring |
 
 ## Software Tools Used
 
@@ -155,9 +156,13 @@ The MCP2515 CAN modules are connected on both sides. STM32 sends the safety comm
 
 ### Raspberry Pi Dashboard
 
-1. Open the dashboard code if available.
-2. Run the Python file on Raspberry Pi.
-3. Use the dashboard for logging and visual monitoring.
+1. Open the dashboard code from `src/raspberry_pi_dashboard/`.
+2. Copy the file to Raspberry Pi.
+3. Install required Python libraries if needed.
+4. Run the dashboard using:
+
+```bash
+python3 safety_dashboard.py
 
 ## Applications
 
